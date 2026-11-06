@@ -1,0 +1,11 @@
+/target/
+.env
+.env.*
+tokens.json
+settings.json
+*.bak
+*.log
+*.zip
+*.tar.gz
+/pause-fix-backup-*/
+/cli-fix-backup-*/

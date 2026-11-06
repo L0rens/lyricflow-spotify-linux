@@ -1,0 +1,23 @@
+[package]
+name = "lyricflow"
+version = "0.1.0"
+edition = "2024"
+description = "Terminal karaoke for Spotify on Linux with synchronized lyrics"
+license = "MIT"
+repository = "https://github.com/L0rens/lyricflow-spotify-linux"
+
+[dependencies]
+anyhow = "1.0.104"
+base64 = "0.23.1"
+crossterm = "0.29.0"
+open = "5.4.5"
+rand = "0.10.3"
+ratatui = "0.30.2"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "form", "rustls", "query"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+tokio = { version = "1.54.1", features = ["full"] }
+url = "2.5.8"
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
