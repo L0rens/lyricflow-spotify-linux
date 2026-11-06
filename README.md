@@ -3,6 +3,10 @@
 Terminal karaoke for Spotify on Linux with synchronized lyrics, built with Rust, Ratatui,
 Crossterm, Tokio and LRCLIB. Repository name: **lyricflow-spotify-linux**.
 
+## Preview
+
+![lyricflow running in a Linux terminal with the Pure White theme and synchronized lyric highlighting](docs/images/lyricflow.png)
+
 ## Features
 
 - Progressive, Unicode-aware lyric highlighting.
