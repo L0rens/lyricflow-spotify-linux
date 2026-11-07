@@ -39,6 +39,13 @@ cargo install --path . --locked
 Ensure the Cargo binary directory (`~/.cargo/bin`) is on your PATH. To replace an
 existing Cargo installation, add `--force`. For development, use `cargo run --locked`.
 
+### Arch Linux / AUR
+
+A proposed `lyricflow-bin` recipe is available in
+[packaging/aur](packaging/aur/README.md). It is not yet submitted to AUR. The
+recipe uses the published binary with a pinned SHA256 checksum. Follow the guide
+to build and validate it on Arch before submitting it through your AUR account.
+
 ## Connect Spotify
 
 **Spotify Premium is required for Spotify mode.** The offline demo does not

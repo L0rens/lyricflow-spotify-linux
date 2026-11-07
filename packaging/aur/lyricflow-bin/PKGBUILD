@@ -1,0 +1,25 @@
+pkgname=lyricflow-bin
+pkgver=0.1.1
+pkgrel=1
+pkgdesc='Terminal karaoke for Spotify on Linux (prebuilt binary)'
+arch=('x86_64')
+url='https://github.com/L0rens/lyricflow-spotify-linux'
+license=('MIT')
+depends=('glibc' 'gcc-libs' 'ca-certificates')
+optdepends=('xdg-utils: open Spotify authorization in a browser'
+            'kitty: optional terminal font-size controls')
+provides=("lyricflow=$pkgver")
+conflicts=('lyricflow')
+options=('!strip' '!debug')
+source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/lyricflow-v$pkgver-x86_64-unknown-linux-gnu.tar.gz")
+sha256sums=('219c2f344332631ddf7e17818ca6b3d3eb1b0adfb70c49193ca0e103eb1abc05')
+
+package() {
+    local release_dir="$srcdir/lyricflow-v$pkgver-x86_64-unknown-linux-gnu"
+    install -Dm755 "$release_dir/lyricflow" "$pkgdir/usr/bin/lyricflow"
+    install -Dm644 "$release_dir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 "$release_dir/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+    install -Dm644 "$release_dir/CHANGELOG.md" "$pkgdir/usr/share/doc/$pkgname/CHANGELOG.md"
+    install -Dm644 "$release_dir/demo.lrc" "$pkgdir/usr/share/doc/$pkgname/examples/demo.lrc"
+    install -Dm644 "$release_dir/docs/images/lyricflow.gif" "$pkgdir/usr/share/doc/$pkgname/docs/images/lyricflow.gif"
+}
