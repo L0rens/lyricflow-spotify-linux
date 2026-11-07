@@ -41,6 +41,9 @@ existing Cargo installation, add `--force`. For development, use `cargo run --lo
 
 ## Connect Spotify
 
+**Spotify Premium is required for Spotify mode.** The offline demo does not
+require a Spotify account or subscription.
+
 Create a Spotify developer application and configure this exact redirect URI:
 
 ```text
