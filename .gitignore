@@ -9,3 +9,4 @@ settings.json
 *.tar.gz
 /pause-fix-backup-*/
 /cli-fix-backup-*/
+*.bak.*

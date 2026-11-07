@@ -312,3 +312,43 @@ fn absent_playback_clears_the_clock() {
     app.sync_clock(&None, now, now);
     assert_eq!(app.position(), 0);
 }
+
+#[test]
+fn every_highlight_choice_is_respected_in_every_theme() {
+    let expected = [GREEN, CYAN, Color::Yellow, Color::Magenta, Color::White];
+    for theme in 0..THEMES.len() {
+        for (selection, color) in expected.iter().enumerate() {
+            assert_eq!(highlight_color(selection, theme), *color);
+        }
+    }
+}
+
+#[test]
+fn compact_layout_keeps_track_progress_and_lyrics_visible() {
+    for (width, height) in [(80, 24), (60, 20), (50, 16), (40, 15)] {
+        let app = app_at(3_000, vec![lyric(1_000, "ABCD"), lyric(5_000, "WXYZ")]);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        for text in ["Fixture song", "00:03", "00:30", "ABCD"] {
+            assert!(!matching_cells(buffer, text).is_empty());
+        }
+    }
+}
+
+#[test]
+fn compact_settings_scrolls_to_the_selected_last_item() {
+    let mut app = app_at(3_000, vec![]);
+    app.menu_open = true;
+    app.menu_selection = 15;
+    let mut terminal = Terminal::new(TestBackend::new(40, 15)).unwrap();
+    terminal.draw(|frame| draw(frame, &app)).unwrap();
+    assert!(!matching_cells(terminal.backend().buffer(), "> Close menu").is_empty());
+}
+
+#[test]
+fn timestamp_expands_for_hours() {
+    assert_eq!(timestamp(3_599_000), "59:59");
+    assert_eq!(timestamp(4_363_000), "1:12:43");
+    assert_eq!(timestamp(360_001_000), "100:00:01");
+}

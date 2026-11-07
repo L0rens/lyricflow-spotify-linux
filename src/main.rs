@@ -5,6 +5,9 @@ mod karaoke;
 mod lyrics;
 mod services;
 mod spotify;
+mod spotify_error;
+mod storage;
+mod ui;
 mod updates;
 
 #[cfg(test)]
@@ -17,16 +20,16 @@ use karaoke::blend;
 use lyrics::LyricLine;
 use ratatui::{
     DefaultTerminal, Frame,
-    layout::{Alignment, Constraint, Direction, Layout},
+    layout::{Alignment, Constraint, Direction, Layout, Margin},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Gauge, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use serde::{Deserialize, Serialize};
 use services::{LyricsLoader, PlaybackWorker};
 use spotify::{Playback, SpotifyClient};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use std::{fs, path::PathBuf};
 
 const CYAN: Color = Color::Rgb(131, 217, 245);
 const GREEN: Color = Color::Rgb(105, 221, 163);
@@ -215,25 +218,22 @@ impl Default for Settings {
     }
 }
 
-fn settings_path() -> Option<PathBuf> {
-    Some(PathBuf::from(std::env::var_os("HOME")?).join(".config/lyricflow/settings.json"))
+fn settings_path() -> Result<PathBuf> {
+    Ok(storage::config_dir()?.join("settings.json"))
 }
 
-fn load_settings() -> Settings {
-    settings_path()
-        .and_then(|path| fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+fn load_settings() -> (Settings, Option<String>) {
+    match settings_path().and_then(|path| storage::load_json(&path)) {
+        Ok(result) => result,
+        Err(error) => (
+            Settings::default(),
+            Some(format!("Settings unavailable: {error}")),
+        ),
+    }
 }
 
 fn save_settings(settings: &Settings) -> Result<()> {
-    if let Some(path) = settings_path() {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(path, serde_json::to_vec_pretty(settings)?)?;
-    }
-    Ok(())
+    storage::write_atomic(&settings_path()?, &serde_json::to_vec_pretty(settings)?)
 }
 
 fn apply_kitty_font_size(size: u8) -> std::result::Result<(), String> {
@@ -252,10 +252,7 @@ fn apply_kitty_font_size(size: u8) -> std::result::Result<(), String> {
     }
 }
 
-fn highlight_color(index: usize, theme: usize) -> Color {
-    if is_white_theme(theme) {
-        return Color::White;
-    }
+fn highlight_color(index: usize, _theme: usize) -> Color {
     match index % 5 {
         0 => GREEN,
         1 => CYAN,
@@ -298,15 +295,21 @@ fn draw_menu(frame: &mut Frame, app: &App) {
         (
             t("show_lyrics"),
             if app.settings.show_lyrics {
-                "ON"
+                t("on")
             } else {
-                "OFF"
+                t("off")
             }
             .to_string(),
         ),
         (
             t("highlight_color"),
-            ["Green", "Cyan", "Yellow", "Magenta", "White"][app.settings.highlight_color % 5]
+            [
+                t("color_green"),
+                t("color_cyan"),
+                t("color_yellow"),
+                t("color_magenta"),
+                t("color_white"),
+            ][app.settings.highlight_color % 5]
                 .to_string(),
         ),
         (
@@ -320,34 +323,42 @@ fn draw_menu(frame: &mut Frame, app: &App) {
         (
             t("check_updates"),
             if app.settings.check_updates {
-                "ON"
+                t("on")
             } else {
-                "OFF"
+                t("off")
             }
             .to_owned(),
         ),
         (
-            "Animation",
-            if app.settings.animation { "ON" } else { "OFF" }.to_owned(),
+            t("animation"),
+            if app.settings.animation {
+                t("on")
+            } else {
+                t("off")
+            }
+            .to_owned(),
         ),
-        ("Animation FPS", format!("{}", app.settings.animation_fps)),
         (
-            "Karaoke fill",
+            t("animation_fps"),
+            format!("{}", app.settings.animation_fps),
+        ),
+        (
+            t("karaoke_fill"),
             if app.settings.karaoke_fill {
-                "ON"
+                t("on")
             } else {
-                "OFF"
+                t("off")
             }
             .to_owned(),
         ),
         (
-            "Lyrics spacing",
-            ["Compact", "Normal", "Spacious"][app.settings.text_size.min(2)].to_owned(),
+            t("lyrics_spacing"),
+            [t("compact"), t("normal"), t("spacious")][app.settings.text_size.min(2)].to_owned(),
         ),
         (
-            "Font size (Kitty)",
+            t("font_size"),
             if app.settings.font_size_pt == 0 {
-                "Terminal default".to_owned()
+                t("terminal_default").to_owned()
             } else {
                 format!("{} pt", app.settings.font_size_pt)
             },
@@ -396,7 +407,13 @@ fn draw_menu(frame: &mut Frame, app: &App) {
         Style::default().fg(muted),
     )));
     frame.render_widget(
-        Paragraph::new(lines).block(panel("MENU", app.settings.theme)),
+        Paragraph::new(lines)
+            .scroll((
+                (app.menu_selection + 4).saturating_sub(area.height.saturating_sub(2) as usize)
+                    as u16,
+                0,
+            ))
+            .block(panel(t("menu"), app.settings.theme)),
         area,
     );
 }
@@ -470,18 +487,19 @@ struct App {
 
 impl App {
     fn new() -> Self {
+        let (settings, warning) = load_settings();
         Self {
             playback: None,
             clock: PlaybackClock::new(),
-            message: String::from("Connecting to Spotify..."),
+            message: i18n::tr(&settings.language, "connecting").to_owned(),
             connected: false,
             track_key: None,
             lyrics: None,
-            lyrics_message: String::from("Waiting for a track..."),
-            settings: load_settings(),
+            lyrics_message: i18n::tr(&settings.language, "waiting_track").to_owned(),
+            settings,
             menu_open: false,
             menu_selection: 0,
-            update_message: String::new(),
+            update_message: warning.unwrap_or_default(),
         }
     }
 
@@ -537,15 +555,31 @@ impl App {
     fn set_lyrics(&mut self, result: Result<Option<Vec<LyricLine>>, String>) {
         match result {
             Ok(Some(lines)) => self.lyrics = Some(lines),
-            Ok(None) => self.lyrics_message = "No synchronized lyrics found".to_owned(),
-            Err(error) => self.lyrics_message = format!("Lyrics unavailable: {error}"),
+            Ok(None) => {
+                self.lyrics_message = i18n::tr(&self.settings.language, "no_lyrics").to_owned()
+            }
+            Err(error) => {
+                self.lyrics_message = format!(
+                    "{}: {error}",
+                    i18n::tr(&self.settings.language, "lyrics_error")
+                )
+            }
         }
     }
 }
 
 fn timestamp(milliseconds: u64) -> String {
     let seconds = milliseconds / 1000;
-    format!("{:02}:{:02}", seconds / 60, seconds % 60)
+    if seconds >= 3_600 {
+        format!(
+            "{}:{:02}:{:02}",
+            seconds / 3_600,
+            seconds / 60 % 60,
+            seconds % 60
+        )
+    } else {
+        format!("{:02}:{:02}", seconds / 60, seconds % 60)
+    }
 }
 
 fn panel(title: &str, theme: usize) -> Block<'_> {
@@ -592,9 +626,9 @@ fn draw_lyrics(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, muted:
                 "{} · {}",
                 t("lyrics"),
                 if lyrics[current].words.is_empty() {
-                    "Approximate fill"
+                    t("approximate_fill")
                 } else {
-                    "Word timestamps"
+                    t("word_timestamps")
                 }
             );
             let transition = if app.settings.animation {
@@ -672,12 +706,25 @@ fn draw(frame: &mut Frame, app: &App) {
     } else {
         theme_color(app.settings.theme, 2)
     };
+    if frame.area().width < 30 || frame.area().height < 10 {
+        frame.render_widget(
+            Paragraph::new(format!(
+                "Terminal too small: {}x{}. Minimum: 30x10.",
+                frame.area().width,
+                frame.area().height
+            ))
+            .wrap(Wrap { trim: false }),
+            frame.area(),
+        );
+        return;
+    }
+    let compact = frame.area().width < 70 || frame.area().height < 24;
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
-            Constraint::Length(9),
-            Constraint::Min(7),
+            Constraint::Length(if compact { 0 } else { 3 }),
+            Constraint::Length(if compact { 6 } else { 9 }),
+            Constraint::Min(3),
             Constraint::Length(3),
         ])
         .split(frame.area());
@@ -698,8 +745,8 @@ fn draw(frame: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(2),
-            Constraint::Length(2),
+            Constraint::Length(if compact { 1 } else { 2 }),
+            Constraint::Length(if compact { 1 } else { 2 }),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
@@ -716,12 +763,9 @@ fn draw(frame: &mut Frame, app: &App) {
                 .collect::<Vec<_>>()
                 .join(", ");
             let position = app.position().min(track.duration_ms);
-            let ratio = if track.duration_ms == 0 {
-                0.0
-            } else {
-                position as f64 / track.duration_ms as f64
-            };
-            let state = if app.playback.as_ref().is_some_and(|p| p.is_playing) {
+            let state = if !app.connected {
+                app.message.as_str()
+            } else if app.playback.as_ref().is_some_and(|p| p.is_playing) {
                 t("playing")
             } else {
                 t("paused")
@@ -736,20 +780,21 @@ fn draw(frame: &mut Frame, app: &App) {
                 track_area[0],
             );
             frame.render_widget(
-                Paragraph::new(format!("{artists} / {}", track.album.name))
-                    .style(Style::default().fg(muted)),
+                Paragraph::new(if compact {
+                    artists
+                } else {
+                    format!("{artists} / {}", track.album.name)
+                })
+                .style(Style::default().fg(muted)),
                 track_area[1],
             );
-            frame.render_widget(
-                Gauge::default()
-                    .ratio(ratio.clamp(0.0, 1.0))
-                    .gauge_style(Style::default().fg(green))
-                    .label(format!(
-                        "{} / {}",
-                        timestamp(position),
-                        timestamp(track.duration_ms)
-                    )),
+            ui::draw_progress(
+                frame,
                 track_area[2],
+                position,
+                track.duration_ms,
+                green,
+                muted,
             );
             frame.render_widget(
                 Paragraph::new(state).style(Style::default().fg(green)),
@@ -757,8 +802,13 @@ fn draw(frame: &mut Frame, app: &App) {
             );
         }
         None => frame.render_widget(
-            Paragraph::new(app.message.as_str()).style(Style::default().fg(muted)),
-            track_area[0],
+            Paragraph::new(app.message.as_str())
+                .style(Style::default().fg(muted))
+                .wrap(Wrap { trim: false }),
+            sections[1].inner(Margin {
+                vertical: 1,
+                horizontal: 1,
+            }),
         ),
     }
 
@@ -779,7 +829,14 @@ fn draw(frame: &mut Frame, app: &App) {
                     Color::Red
                 }),
             ),
-            Span::styled(t("footer_help"), Style::default().fg(muted)),
+            Span::styled(
+                if compact {
+                    t("footer_compact")
+                } else {
+                    t("footer_help")
+                },
+                Style::default().fg(muted),
+            ),
         ]))
         .block(panel(t("controls"), app.settings.theme)),
         sections[3],
@@ -795,7 +852,12 @@ async fn run(terminal: &mut DefaultTerminal, settings_only: bool) -> Result<()> 
     let mut app = App::new();
     app.menu_open = settings_only;
     if settings_only {
-        app.update_message = "Esc: save and exit / Q: exit".to_owned();
+        let controls = i18n::tr(&app.settings.language, "settings_controls");
+        app.update_message = if app.update_message.is_empty() {
+            controls.to_owned()
+        } else {
+            format!("{} | {controls}", app.update_message)
+        };
     }
     if app.settings.font_size_pt != 0
         && let Err(error) = apply_kitty_font_size(app.settings.font_size_pt)
@@ -803,7 +865,7 @@ async fn run(terminal: &mut DefaultTerminal, settings_only: bool) -> Result<()> 
         app.update_message = error;
     }
     let mut last_poll = Instant::now() - Duration::from_secs(31);
-    let mut update_task: Option<tokio::task::JoinHandle<String>> = None;
+    let mut update_task: Option<tokio::task::JoinHandle<updates::UpdateResult>> = None;
     if app.settings.check_updates && !settings_only {
         update_task = Some(tokio::spawn(updates::check()));
     }
@@ -814,7 +876,8 @@ async fn run(terminal: &mut DefaultTerminal, settings_only: bool) -> Result<()> 
         {
             app.update_message = task
                 .await
-                .unwrap_or_else(|_| "Update check failed".to_owned());
+                .unwrap_or(updates::UpdateResult::Failed)
+                .message(&app.settings.language);
         }
         if !settings_only
             && last_poll.elapsed() >= Duration::from_secs(app.settings.refresh_seconds.clamp(1, 30))
@@ -828,7 +891,13 @@ async fn run(terminal: &mut DefaultTerminal, settings_only: bool) -> Result<()> 
                     app.sync_clock(&playback, sample.requested_at, sample.received_at);
                     app.playback = playback;
                     app.connected = true;
-                    app.message = "Nothing is currently playing".to_owned();
+                    app.message = i18n::tr(
+                        &app.settings.language,
+                        app.playback
+                            .as_ref()
+                            .map_or("spotify_no_playback", |state| state.idle_key()),
+                    )
+                    .to_owned();
                     let track = app.playback.as_ref().and_then(|state| state.item.as_ref());
                     let key = track.map(|track| track.key());
                     if key != app.track_key {
@@ -837,21 +906,33 @@ async fn run(terminal: &mut DefaultTerminal, settings_only: bool) -> Result<()> 
                         match track {
                             Some(track) => {
                                 let cached = lyrics_loader.start(track);
-                                app.lyrics_message = "Loading synchronized lyrics...".to_owned();
+                                app.lyrics_message =
+                                    i18n::tr(&app.settings.language, "loading_lyrics").to_owned();
                                 if let Some(lines) = cached {
                                     app.set_lyrics(Ok(lines));
                                 }
                             }
                             None => {
                                 lyrics_loader.cancel();
-                                app.lyrics_message = "Waiting for a track...".to_owned();
+                                app.lyrics_message =
+                                    i18n::tr(&app.settings.language, "waiting_track").to_owned();
                             }
                         }
                     }
                 }
                 Err(error) => {
                     app.connected = false;
-                    app.message = error;
+                    app.message = i18n::tr(&app.settings.language, error.key()).to_owned();
+                    if let spotify_error::SpotifyError::RateLimited(delay) = &error {
+                        app.message.push_str(&format!(" ({} s)", delay.as_secs()));
+                    }
+                    if error.needs_login() {
+                        app.playback = None;
+                        app.clock.clear();
+                        app.track_key = None;
+                        app.lyrics = None;
+                        lyrics_loader.cancel();
+                    }
                 }
             }
         }
@@ -888,13 +969,15 @@ async fn run(terminal: &mut DefaultTerminal, settings_only: bool) -> Result<()> 
                     KeyCode::Enter => match app.menu_selection {
                         0..=11 => edit_setting(&mut app, 1),
                         12 => {
-                            app.update_message = "Checking GitHub...".to_owned();
+                            app.update_message =
+                                i18n::tr(&app.settings.language, "checking_updates").to_owned();
                             update_task = Some(tokio::spawn(updates::check()));
                         }
                         13 => save_settings(&app.settings)?,
                         14 => {
                             app.settings = Settings::default();
-                            app.update_message = "Settings reset. Font size unchanged.".to_owned();
+                            app.update_message =
+                                i18n::tr(&app.settings.language, "settings_reset").to_owned();
                         }
                         15 => {
                             app.menu_open = false;
@@ -912,13 +995,15 @@ async fn run(terminal: &mut DefaultTerminal, settings_only: bool) -> Result<()> 
                     KeyCode::Char('q') => break,
                     KeyCode::Esc => app.menu_open = true,
                     KeyCode::Char('r') => {
+                        playback_worker.retry();
                         last_poll = Instant::now() - Duration::from_secs(31);
                         if app.lyrics.is_none()
                             && let Some(track) =
                                 app.playback.as_ref().and_then(|state| state.item.as_ref())
                         {
                             let cached = lyrics_loader.retry(track);
-                            app.lyrics_message = "Loading synchronized lyrics...".to_owned();
+                            app.lyrics_message =
+                                i18n::tr(&app.settings.language, "loading_lyrics").to_owned();
                             if let Some(lines) = cached {
                                 app.set_lyrics(Ok(lines));
                             }

@@ -5,7 +5,7 @@ Crossterm, Tokio and LRCLIB. Repository name: **lyricflow-spotify-linux**.
 
 ## Preview
 
-![lyricflow running in a Linux terminal with the Pure White theme and synchronized lyric highlighting](docs/images/lyricflow.png)
+![lyricflow running in a Linux terminal with synchronized lyric highlighting](docs/images/lyricflow.png)
 
 ## Features
 
@@ -13,7 +13,8 @@ Crossterm, Tokio and LRCLIB. Repository name: **lyricflow-spotify-linux**.
 - Local playback clock with pause/resume, seek handling and drift correction.
 - Background Spotify polling and cancellable lyric requests.
 - Standard LRC and Enhanced LRC parsing, including word timestamps when supplied.
-- 17 themes, including transparent Pure White, and 14 interface languages.
+- Multiple built-in color themes and configurable lyric highlighting.
+- 14 interface languages, with English fallback for new messages where needed.
 - Persistent settings, manual lyric offset and optional Kitty font controls.
 
 ## Install
@@ -49,6 +50,30 @@ set -Ux LYRICFLOW_CLIENT_ID YOUR_SPOTIFY_CLIENT_ID
 lyricflow login
 ```
 
+## Spotify API access and subscription requirements
+
+Check Spotify's current [quota-mode requirements](https://developer.spotify.com/documentation/web-api/concepts/quota-modes)
+for your developer application and the accounts allowed to use it, including any
+Premium requirements. Requirements can differ by app mode and account role.
+lyricflow does not provide subscription bypasses. HTTP 403 is not treated as
+proof that the user's subscription is missing: app permissions and allowed-user
+restrictions can also deny access.
+
+## Connection and updates
+
+The player-state endpoint distinguishes an explicitly missing/inactive Spotify
+device from connected idle playback. An empty 204 response is shown as no
+current playback; it is not claimed to prove that no device exists.
+
+Authorization failures stop automatic retries and discard the failed client.
+After logging in again, press **R** to reload saved credentials. Spotify rate
+limits respect `Retry-After`, including when **R** is pressed. Temporary failures
+use increasing retry delays. HTTP 403 is reported separately from authentication.
+
+Update checks default to this repository. Set `LYRICFLOW_GITHUB_REPO=owner/repo`
+only to override it for a fork. When no release exists yet, the checker reports
+that neutrally; older releases are not announced as upgrades.
+
 ## Commands
 
 | Command | Action |
@@ -67,9 +92,13 @@ In karaoke, **Q** quits, **R** refreshes playback and retries missing lyrics, an
 
 ## Local data
 
-Settings are stored in `~/.config/lyricflow/settings.json`; credentials are stored
-in `~/.config/lyricflow/tokens.json`. Logout removes only the credential file and
-keeps settings. It does not revoke the application's access on Spotify.
+Settings and credentials use `$XDG_CONFIG_HOME/lyricflow/` when XDG_CONFIG_HOME is
+an absolute path, falling back to `~/.config/lyricflow/`. The filenames remain
+`settings.json` and `tokens.json`. Saves replace files atomically; credential
+files use owner-only permissions on Unix. Invalid settings are preserved in a
+`.bak` file before defaults are used. Existing backups are never overwritten.
+Logout removes only the credential file and keeps settings. It does not revoke
+the application's access on Spotify.
 
 No user tokens, client IDs, personal settings or home-directory paths are
 included in the source distribution.
@@ -96,8 +125,9 @@ Small seeks can be treated as drift. Manual Lyrics offset remains available.
 
 ## Appearance
 
-Pure White preserves the terminal's background, including popup selections.
-White is also available as a highlight in other themes. Kitty font controls
+Themes preserve the terminal's default background. The selected lyric highlight
+color works independently of the theme. Small terminals use a compact layout;
+elapsed time, progress bar and duration have separate display areas. Kitty font controls
 require a permitted Kitty remote-control interface and affect the whole terminal
 window. Lyric spacing does not change the actual terminal font size.
 

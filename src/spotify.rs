@@ -1,3 +1,7 @@
+use crate::{
+    spotify_error::{self, SpotifyError},
+    storage,
+};
 use anyhow::{Context, Result, bail};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
@@ -28,11 +32,7 @@ struct TokenResponse {
 }
 
 fn token_path() -> Result<PathBuf> {
-    let home = env::var("HOME").context("HOME is not set")?;
-    Ok(PathBuf::from(home)
-        .join(".config")
-        .join("lyricflow")
-        .join("tokens.json"))
+    Ok(storage::config_dir()?.join("tokens.json"))
 }
 
 pub fn logout() -> Result<bool> {
@@ -146,7 +146,9 @@ pub async fn login() -> Result<()> {
     })
     .await??;
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()?;
 
     let response = client
         .post("https://accounts.spotify.com/api/token")
@@ -158,11 +160,13 @@ pub async fn login() -> Result<()> {
             ("code_verifier", verifier.as_str()),
         ])
         .send()
-        .await?
-        .error_for_status()
-        .context("Spotify rejected the token request")?;
+        .await;
+    let response = spotify_error::checked(response, true).await?;
 
-    let token: TokenResponse = response.json().await?;
+    let token: TokenResponse = response
+        .json()
+        .await
+        .map_err(|_| SpotifyError::InvalidResponse)?;
 
     let tokens = Tokens {
         access_token: token.access_token,
@@ -172,24 +176,7 @@ pub async fn login() -> Result<()> {
 
     let path = token_path()?;
 
-    fs::create_dir_all(path.parent().context("Invalid token path")?)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)?;
-
-        serde_json::to_writer_pretty(&mut file, &tokens)?;
-    }
-
-    #[cfg(not(unix))]
-    fs::write(&path, serde_json::to_vec_pretty(&tokens)?)?;
+    storage::write_atomic(&path, &serde_json::to_vec_pretty(&tokens)?)?;
 
     println!("Successfully connected to Spotify.");
     Ok(())
@@ -197,9 +184,51 @@ pub async fn login() -> Result<()> {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Playback {
+    #[serde(default)]
+    pub device: DeviceState,
     pub is_playing: bool,
     pub progress_ms: Option<u64>,
     pub item: Option<Track>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub enum DeviceState {
+    #[default]
+    Unknown,
+    Missing,
+    Known {
+        active: bool,
+    },
+}
+
+impl<'de> Deserialize<'de> for DeviceState {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Device {
+            is_active: bool,
+        }
+        Ok(match Option::<Device>::deserialize(deserializer)? {
+            Some(device) => Self::Known {
+                active: device.is_active,
+            },
+            None => Self::Missing,
+        })
+    }
+}
+
+impl Playback {
+    pub fn idle_key(&self) -> &'static str {
+        if matches!(
+            self.device,
+            DeviceState::Missing | DeviceState::Known { active: false }
+        ) {
+            "spotify_no_device"
+        } else {
+            "spotify_no_track"
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -251,13 +280,24 @@ pub struct SpotifyClient {
 
 impl SpotifyClient {
     pub async fn connect() -> Result<Self> {
-        let client_id =
-            env::var("LYRICFLOW_CLIENT_ID").context("LYRICFLOW_CLIENT_ID is not set")?;
-        let data = fs::read(token_path()?)
-            .context("Spotify is not connected. Run `lyricflow login` first")?;
-        let tokens: Tokens = serde_json::from_slice(&data)?;
+        let client_id = env::var("LYRICFLOW_CLIENT_ID")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or(SpotifyError::Configuration)?;
+        let data =
+            fs::read(token_path().map_err(|_| SpotifyError::Configuration)?).map_err(|error| {
+                if error.kind() == ErrorKind::NotFound {
+                    SpotifyError::NotConnected
+                } else {
+                    SpotifyError::Storage
+                }
+            })?;
+        let tokens: Tokens =
+            serde_json::from_slice(&data).map_err(|_| SpotifyError::Authorization)?;
         let mut spotify = Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(15))
+                .build()?,
             client_id,
             tokens,
             expires_at: std::time::Instant::now(),
@@ -271,7 +311,7 @@ impl SpotifyClient {
             .tokens
             .refresh_token
             .as_deref()
-            .context("Missing refresh token. Run `lyricflow login` again")?
+            .ok_or(SpotifyError::Authorization)?
             .to_owned();
         let response = self
             .client
@@ -282,30 +322,21 @@ impl SpotifyClient {
                 ("client_id", self.client_id.as_str()),
             ])
             .send()
-            .await?
-            .error_for_status()
-            .context("Failed to refresh Spotify authorization")?;
-        let token: TokenResponse = response.json().await?;
+            .await;
+        let response = spotify_error::checked(response, true).await?;
+        let token: TokenResponse = response
+            .json()
+            .await
+            .map_err(|_| SpotifyError::InvalidResponse)?;
         self.tokens.access_token = token.access_token;
         self.tokens.refresh_token = Some(token.refresh_token.unwrap_or(refresh_token));
         self.tokens.expires_in = token.expires_in;
         self.expires_at =
             std::time::Instant::now() + Duration::from_secs(token.expires_in.saturating_sub(60));
 
-        let path = token_path()?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&path)?;
-            serde_json::to_writer_pretty(&mut file, &self.tokens)?;
-        }
-        #[cfg(not(unix))]
-        fs::write(&path, serde_json::to_vec_pretty(&self.tokens)?)?;
+        let path = token_path().map_err(|_| SpotifyError::Configuration)?;
+        storage::write_atomic(&path, &serde_json::to_vec_pretty(&self.tokens)?)
+            .map_err(|_| SpotifyError::Storage)?;
         Ok(())
     }
 
@@ -324,16 +355,18 @@ impl SpotifyClient {
         let requested_at = std::time::Instant::now();
         let response = self
             .client
-            .get("https://api.spotify.com/v1/me/player/currently-playing")
+            .get("https://api.spotify.com/v1/me/player")
             .bearer_auth(&self.tokens.access_token)
             .send()
-            .await?
-            .error_for_status()
-            .context("Failed to fetch Spotify playback")?;
+            .await;
+        let response = spotify_error::checked(response, false).await?;
         if response.status() == reqwest::StatusCode::NO_CONTENT {
             return Ok((requested_at, std::time::Instant::now(), None));
         }
-        let playback = response.json::<Playback>().await?;
+        let playback = response
+            .json::<Playback>()
+            .await
+            .map_err(|_| SpotifyError::InvalidResponse)?;
         Ok((requested_at, std::time::Instant::now(), Some(playback)))
     }
 }
@@ -367,6 +400,30 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn device_state_is_distinct_from_unknown_and_idle_playback() {
+        let parse = |device: Option<serde_json::Value>| {
+            let mut data = serde_json::json!({"is_playing":false,"progress_ms":null,"item":null});
+            if let Some(device) = device {
+                data["device"] = device;
+            }
+            serde_json::from_value::<Playback>(data).unwrap()
+        };
+        assert_eq!(parse(None).idle_key(), "spotify_no_track");
+        assert_eq!(
+            parse(Some(serde_json::Value::Null)).idle_key(),
+            "spotify_no_device"
+        );
+        assert_eq!(
+            parse(Some(serde_json::json!({"is_active":true}))).idle_key(),
+            "spotify_no_track"
+        );
+        assert_eq!(
+            parse(Some(serde_json::json!({"is_active":false}))).idle_key(),
+            "spotify_no_device"
+        );
     }
 
     #[test]

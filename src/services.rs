@@ -1,6 +1,7 @@
 use crate::{
     lyrics::{self, LyricLine},
     spotify::{Playback, SpotifyClient, Track},
+    spotify_error::SpotifyError,
 };
 use std::{
     collections::{HashMap, VecDeque},
@@ -13,9 +14,41 @@ const LYRICS_CACHE_CAPACITY: usize = 64;
 type LyricsResult = Result<Option<Vec<LyricLine>>, String>;
 
 pub struct PlaybackSample {
-    pub result: Result<Option<Playback>, String>,
+    pub result: Result<Option<Playback>, SpotifyError>,
     pub requested_at: Instant,
     pub received_at: Instant,
+}
+
+#[derive(Default)]
+struct RequestPolicy {
+    retry_at: Option<Instant>,
+    blocked: bool,
+    failures: u32,
+}
+
+impl RequestPolicy {
+    fn ready(&self, now: Instant) -> bool {
+        !self.blocked && self.retry_at.is_none_or(|deadline| now >= deadline)
+    }
+
+    fn observe(&mut self, result: &Result<Option<Playback>, SpotifyError>, now: Instant) {
+        match result {
+            Ok(_) => *self = Self::default(),
+            Err(error) if error.needs_login() || *error == SpotifyError::Forbidden => {
+                self.blocked = true;
+            }
+            Err(SpotifyError::RateLimited(delay)) => {
+                self.retry_at = now
+                    .checked_add(*delay)
+                    .or_else(|| now.checked_add(Duration::from_secs(60)));
+            }
+            Err(_) => {
+                self.failures = self.failures.saturating_add(1);
+                let delay = Duration::from_secs(2_u64.saturating_pow(self.failures.min(6)).min(60));
+                self.retry_at = now.checked_add(delay);
+            }
+        }
+    }
 }
 
 pub struct PlaybackWorker {
@@ -23,6 +56,7 @@ pub struct PlaybackWorker {
     results: mpsc::Receiver<PlaybackSample>,
     task: JoinHandle<()>,
     pending: bool,
+    policy: RequestPolicy,
 }
 
 impl PlaybackWorker {
@@ -51,13 +85,23 @@ impl PlaybackWorker {
                     },
                     other => PlaybackSample {
                         result: Err(match other {
-                            Ok(Err(error)) => error.to_string(),
-                            _ => "Spotify request timed out".to_owned(),
+                            Ok(Err(error)) => error
+                                .downcast_ref::<SpotifyError>()
+                                .cloned()
+                                .unwrap_or(SpotifyError::InvalidResponse),
+                            _ => SpotifyError::Timeout,
                         }),
                         requested_at,
                         received_at: Instant::now(),
                     },
                 };
+                if sample
+                    .result
+                    .as_ref()
+                    .is_err_and(|error| error.needs_login())
+                {
+                    client = None;
+                }
                 if outbox.send(sample).await.is_err() {
                     break;
                 }
@@ -68,11 +112,17 @@ impl PlaybackWorker {
             results,
             task,
             pending: false,
+            policy: RequestPolicy::default(),
         }
     }
 
+    pub fn retry(&mut self) {
+        self.policy.blocked = false;
+    }
+
     pub fn request(&mut self) -> bool {
-        if self.pending || self.requests.try_send(()).is_err() {
+        if self.pending || !self.policy.ready(Instant::now()) || self.requests.try_send(()).is_err()
+        {
             return false;
         }
         self.pending = true;
@@ -82,6 +132,7 @@ impl PlaybackWorker {
     pub fn try_result(&mut self) -> Option<PlaybackSample> {
         let sample = self.results.try_recv().ok()?;
         self.pending = false;
+        self.policy.observe(&sample.result, sample.received_at);
         Some(sample)
     }
 }
@@ -170,6 +221,46 @@ impl Drop for LyricsLoader {
 mod tests {
     use super::*;
 
+    #[test]
+    fn authorization_failures_stop_polling_until_manual_retry() {
+        let now = Instant::now();
+        let mut policy = RequestPolicy::default();
+        policy.observe(&Err(SpotifyError::Authorization), now);
+        assert!(!policy.ready(now + Duration::from_secs(3_600)));
+        policy.blocked = false;
+        assert!(policy.ready(now));
+    }
+
+    #[test]
+    fn rate_limit_cannot_be_bypassed_by_manual_retry() {
+        let now = Instant::now();
+        let mut policy = RequestPolicy::default();
+        policy.observe(
+            &Err(SpotifyError::RateLimited(Duration::from_secs(123))),
+            now,
+        );
+        policy.blocked = false;
+        assert!(!policy.ready(now + Duration::from_secs(122)));
+        assert!(policy.ready(now + Duration::from_secs(123)));
+        policy.observe(&Ok(None), now + Duration::from_secs(123));
+        assert!(policy.ready(now + Duration::from_secs(124)));
+    }
+
+    #[test]
+    fn transient_errors_back_off_and_success_resets_the_delay() {
+        let now = Instant::now();
+        let mut policy = RequestPolicy::default();
+        for (attempt, seconds) in [(1, 2), (2, 4), (3, 8)] {
+            policy.observe(&Err(SpotifyError::Unavailable), now);
+            assert_eq!(policy.failures, attempt);
+            assert!(!policy.ready(now + Duration::from_secs(seconds - 1)));
+            assert!(policy.ready(now + Duration::from_secs(seconds)));
+        }
+        policy.observe(&Ok(None), now);
+        assert_eq!(policy.failures, 0);
+        assert!(policy.ready(now));
+    }
+
     #[tokio::test]
     async fn pending_playback_does_not_block_or_queue_duplicate_requests() {
         let (requests, mut inbox) = mpsc::channel(1);
@@ -193,6 +284,7 @@ mod tests {
             results,
             task,
             pending: false,
+            policy: RequestPolicy::default(),
         };
         assert!(worker.request());
         assert!(!worker.request());

@@ -17,7 +17,7 @@ Options:
   -V, --version  Show the version
 
 Settings: Esc saves and exits; Q exits.
-Settings are stored in ~/.config/lyricflow/settings.json.
+Settings use $XDG_CONFIG_HOME/lyricflow/settings.json, or ~/.config/lyricflow/settings.json.
 Logout removes credentials on this computer; it does not revoke Spotify access.";
 
 #[derive(Debug, PartialEq, Eq)]

@@ -29,6 +29,9 @@ pub fn next_language(code: &str, direction: i64) -> &'static str {
     LANGUAGES[(index + direction).rem_euclid(LANGUAGES.len() as i64) as usize].0
 }
 pub fn tr(language: &str, key: &str) -> &'static str {
+    if let Some(text) = additional(language, key) {
+        return text;
+    }
     match (language, key) {
         ("en", "settings") => "Settings",
         ("en", "lyrics_offset") => "Lyrics offset",
@@ -407,4 +410,120 @@ pub fn tr(language: &str, key: &str) -> &'static str {
         (_, "footer_help") => "  Esc Menu / Q Quit / R Refresh",
         _ => "",
     }
+}
+
+fn additional(language: &str, key: &str) -> Option<&'static str> {
+    Some(match (language, key) {
+        ("ru", "animation") => "Анимация",
+        ("ru", "animation_fps") => "Частота анимации",
+        ("ru", "karaoke_fill") => "Заполнение строки",
+        ("ru", "lyrics_spacing") => "Интервал строк",
+        ("ru", "font_size") => "Размер шрифта (Kitty)",
+        ("ru", "terminal_default") => "Как в терминале",
+        ("ru", "compact") => "Плотно",
+        ("ru", "normal") => "Обычно",
+        ("ru", "spacious") => "Свободно",
+        ("ru", "on") => "ВКЛ",
+        ("ru", "off") => "ВЫКЛ",
+        ("ru", "color_green") => "Зелёный",
+        ("ru", "color_cyan") => "Голубой",
+        ("ru", "color_yellow") => "Жёлтый",
+        ("ru", "color_magenta") => "Пурпурный",
+        ("ru", "color_white") => "Белый",
+        ("ru", "menu") => "МЕНЮ",
+        ("ru", "checking_updates") => "Проверка GitHub...",
+        ("ru", "update_not_released") => "Релизов пока нет.",
+        ("ru", "update_current") => "Установлена актуальная версия",
+        ("ru", "update_available") => "Доступно обновление",
+        ("ru", "update_failed") => "Проверка обновлений недоступна",
+        ("ru", "update_invalid_repo") => "Неверный LYRICFLOW_GITHUB_REPO (нужен owner/repo)",
+        ("ru", "spotify_configuration") => {
+            "Укажи Client ID приложения Spotify в LYRICFLOW_CLIENT_ID."
+        }
+        ("ru", "spotify_not_connected") => "Spotify не подключён. Выполни `lyricflow login`.",
+        ("ru", "spotify_authorization_expired") => {
+            "Авторизация Spotify истекла или отозвана. Выполни `lyricflow login`, затем нажми R."
+        }
+        ("ru", "spotify_forbidden") => {
+            "Spotify запретил доступ (403). Проверь права приложения, список пользователей и требования к подписке."
+        }
+        ("ru", "spotify_rate_limited") => "Достигнут лимит Spotify. Ожидание перед повтором.",
+        ("ru", "spotify_unavailable") => "API Spotify недоступен. Повтор с увеличенным интервалом.",
+        ("ru", "spotify_timeout") => {
+            "Время ожидания Spotify истекло. Повтор с увеличенным интервалом."
+        }
+        ("ru", "spotify_invalid_response") => "Spotify вернул неподдерживаемый ответ.",
+        ("ru", "spotify_storage_error") => {
+            "Не удалось прочитать или сохранить авторизацию Spotify. Проверь права на папку настроек."
+        }
+        ("ru", "spotify_no_playback") => "Сейчас ничего не играет.",
+        ("ru", "spotify_no_device") => {
+            "Нет активного устройства Spotify. Открой Spotify и запусти музыку."
+        }
+        ("ru", "spotify_no_track") => "Spotify подключён; музыкальный трек сейчас недоступен.",
+        ("ru", "connecting") => "Подключение к Spotify...",
+        ("ru", "waiting_track") => "Ожидание трека...",
+        ("ru", "loading_lyrics") => "Загрузка синхронизированного текста...",
+        ("ru", "no_lyrics") => "Синхронизированный текст не найден",
+        ("ru", "lyrics_error") => "Текст недоступен",
+        ("ru", "approximate_fill") => "Приблизительная подсветка",
+        ("ru", "word_timestamps") => "Пословные метки",
+        ("ru", "footer_compact") => " Esc / Q / R",
+        ("ru", "settings_controls") => "Esc: сохранить и выйти / Q: выйти",
+        ("ru", "settings_reset") => "Настройки сброшены. Размер шрифта сохранён.",
+        (_, "animation") => "Animation",
+        (_, "animation_fps") => "Animation FPS",
+        (_, "karaoke_fill") => "Karaoke fill",
+        (_, "lyrics_spacing") => "Lyrics spacing",
+        (_, "font_size") => "Font size (Kitty)",
+        (_, "terminal_default") => "Terminal default",
+        (_, "compact") => "Compact",
+        (_, "normal") => "Normal",
+        (_, "spacious") => "Spacious",
+        (_, "on") => "ON",
+        (_, "off") => "OFF",
+        (_, "color_green") => "Green",
+        (_, "color_cyan") => "Cyan",
+        (_, "color_yellow") => "Yellow",
+        (_, "color_magenta") => "Magenta",
+        (_, "color_white") => "White",
+        (_, "menu") => "MENU",
+        (_, "checking_updates") => "Checking GitHub...",
+        (_, "update_not_released") => "No releases published yet.",
+        (_, "update_current") => "Up to date",
+        (_, "update_available") => "Update available",
+        (_, "update_failed") => "Update check unavailable",
+        (_, "update_invalid_repo") => "Invalid LYRICFLOW_GITHUB_REPO (expected owner/repo)",
+        (_, "spotify_configuration") => {
+            "Set LYRICFLOW_CLIENT_ID to your Spotify application client ID."
+        }
+        (_, "spotify_not_connected") => "Spotify is not connected. Run `lyricflow login`.",
+        (_, "spotify_authorization_expired") => {
+            "Spotify authorization expired or was revoked. Run `lyricflow login`, then press R."
+        }
+        (_, "spotify_forbidden") => {
+            "Spotify denied access (403). Check app permissions, allowed users and subscription requirements."
+        }
+        (_, "spotify_rate_limited") => "Spotify rate limit reached. Waiting before retry.",
+        (_, "spotify_unavailable") => "Spotify API unavailable. Retrying with backoff.",
+        (_, "spotify_timeout") => "Spotify request timed out. Retrying with backoff.",
+        (_, "spotify_invalid_response") => "Spotify returned an unsupported response.",
+        (_, "spotify_storage_error") => {
+            "Could not read or save Spotify credentials. Check configuration directory permissions."
+        }
+        (_, "spotify_no_playback") => "Nothing is currently playing.",
+        (_, "spotify_no_device") => "No active Spotify device. Open Spotify and start playback.",
+        (_, "spotify_no_track") => "Spotify connected; no music track is currently available.",
+        (_, "connecting") => "Connecting to Spotify...",
+        (_, "waiting_track") => "Waiting for a track...",
+        (_, "loading_lyrics") => "Loading synchronized lyrics...",
+        (_, "no_lyrics") => "No synchronized lyrics found",
+        (_, "lyrics_error") => "Lyrics unavailable",
+        (_, "approximate_fill") => "Approximate fill",
+        (_, "word_timestamps") => "Word timestamps",
+        (_, "footer_compact") => " Esc / Q / R",
+        (_, "settings_controls") => "Esc: save and exit / Q: exit",
+        (_, "settings_reset") => "Settings reset. Font size unchanged.",
+        _ => return None,
+    })
 }
