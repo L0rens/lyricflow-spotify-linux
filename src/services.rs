@@ -172,9 +172,15 @@ impl LyricsLoader {
                 .map(|artist| artist.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
-            lyrics::fetch(&track.name, &artists, &track.album.name, track.duration_ms)
-                .await
-                .map_err(|error| error.to_string())
+            lyrics::fetch(
+                &track.key(),
+                &track.name,
+                &artists,
+                &track.album.name,
+                track.duration_ms,
+            )
+            .await
+            .map_err(|error| error.to_string())
         });
         self.pending = Some((key, task));
         None

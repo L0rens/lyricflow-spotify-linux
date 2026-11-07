@@ -14,6 +14,20 @@ pub fn config_dir() -> Result<PathBuf> {
     )
 }
 
+pub fn cache_dir() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+    {
+        return Ok(path.join("lyricflow"));
+    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .context("Neither an absolute XDG_CACHE_HOME nor HOME is available")?;
+    Ok(home.join(".cache/lyricflow"))
+}
+
 fn config_directory(xdg: Option<OsString>, home: Option<OsString>) -> Result<PathBuf> {
     if let Some(path) = xdg.map(PathBuf::from).filter(|path| path.is_absolute()) {
         return Ok(path.join("lyricflow"));

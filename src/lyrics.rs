@@ -1,3 +1,4 @@
+use crate::lyric_cache::{self, Lookup};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::time::Duration;
@@ -23,14 +24,35 @@ struct LyricsResponse {
     #[serde(rename = "syncedLyrics")]
     synced_lyrics: Option<String>,
     instrumental: bool,
+    #[serde(rename = "trackName", default)]
+    track_name: Option<String>,
+    #[serde(rename = "artistName", default)]
+    artist_name: Option<String>,
+    #[serde(rename = "albumName", default)]
+    album_name: Option<String>,
+    duration: Option<f64>,
 }
 
 pub async fn fetch(
+    track_key: &str,
     track: &str,
     artist: &str,
     album: &str,
     duration_ms: u64,
 ) -> Result<Option<Vec<LyricLine>>> {
+    let lookup = Lookup {
+        key: track_key,
+        track,
+        artist,
+        album,
+        duration_ms,
+    };
+    if let Some(cached) = lyric_cache::read(&lookup) {
+        let lines = within_duration(parse_lrc(&cached), duration_ms);
+        if lines.iter().any(|line| !line.text.is_empty()) {
+            return Ok(Some(lines));
+        }
+    }
     let client = reqwest::Client::builder()
         .user_agent(concat!(
             "lyricflow/",
@@ -51,24 +73,91 @@ pub async fn fetch(
         .send()
         .await?;
 
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
+    let data = if response.status() == reqwest::StatusCode::NOT_FOUND {
+        let candidates: Vec<LyricsResponse> = client
+            .get("https://lrclib.net/api/search")
+            .query(&[("track_name", track), ("artist_name", artist)])
+            .send()
+            .await?
+            .error_for_status()
+            .context("LRCLIB search failed")?
+            .json()
+            .await?;
+        select_candidate(candidates, &lookup)
+    } else {
+        Some(
+            response
+                .error_for_status()
+                .context("LRCLIB request failed")?
+                .json::<LyricsResponse>()
+                .await?,
+        )
+    };
+    let Some(data) = data.filter(|data| !data.instrumental) else {
+        return Ok(None);
+    };
+    let Some(source) = data.synced_lyrics else {
+        return Ok(None);
+    };
+    let lines = within_duration(parse_lrc(&source), duration_ms);
+    if lines.iter().all(|line| line.text.is_empty()) {
         return Ok(None);
     }
+    lyric_cache::store(&lookup, &source);
+    Ok(Some(lines))
+}
 
-    let data: LyricsResponse = response
-        .error_for_status()
-        .context("LRCLIB request failed")?
-        .json()
-        .await?;
+fn normalize(value: &str) -> String {
+    value
+        .unicode_words()
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
-    if data.instrumental {
-        return Ok(None);
+fn select_candidate(
+    candidates: Vec<LyricsResponse>,
+    lookup: &Lookup<'_>,
+) -> Option<LyricsResponse> {
+    let title = normalize(lookup.track);
+    let artist = normalize(lookup.artist);
+    let album = normalize(lookup.album);
+    let wanted_duration = lookup.duration_ms as f64 / 1_000.0;
+    let tolerance = 2.0_f64.min(wanted_duration * 0.02);
+    let mut ranked: Vec<_> = candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            if candidate.instrumental
+                || candidate
+                    .synced_lyrics
+                    .as_ref()
+                    .is_none_or(|text| text.trim().is_empty())
+                || normalize(candidate.track_name.as_deref()?) != title
+                || normalize(candidate.artist_name.as_deref()?) != artist
+            {
+                return None;
+            }
+            let duration = candidate.duration?;
+            if !duration.is_finite() || duration < 0.0 {
+                return None;
+            }
+            let delta = (duration - wanted_duration).abs();
+            if delta > tolerance {
+                return None;
+            }
+            let different_album = normalize(candidate.album_name.as_deref().unwrap_or("")) != album;
+            Some((different_album, delta, candidate))
+        })
+        .collect();
+    ranked.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    if let (Some(first), Some(second)) = (ranked.first(), ranked.get(1))
+        && first.0 == second.0
+        && (first.1 - second.1).abs() < 0.001
+        && first.2.synced_lyrics != second.2.synced_lyrics
+    {
+        return None;
     }
-
-    Ok(data
-        .synced_lyrics
-        .map(|lyrics| within_duration(parse_lrc(&lyrics), duration_ms))
-        .filter(|lines| lines.iter().any(|line| !line.text.is_empty())))
+    ranked.into_iter().next().map(|(_, _, candidate)| candidate)
 }
 
 fn within_duration(mut lines: Vec<LyricLine>, duration_ms: u64) -> Vec<LyricLine> {
@@ -204,7 +293,7 @@ fn enhanced_text(source: &str, line_start: u64) -> (String, Vec<WordTiming>) {
     (text, words)
 }
 
-fn parse_lrc(source: &str) -> Vec<LyricLine> {
+pub fn parse_lrc(source: &str) -> Vec<LyricLine> {
     let offset = source
         .lines()
         .filter_map(|line| {
@@ -282,6 +371,53 @@ fn parse_lrc(source: &str) -> Vec<LyricLine> {
 #[cfg(test)]
 mod tests {
     use super::{parse_lrc, timestamp, within_duration};
+
+    #[test]
+    fn search_rejects_other_recordings_and_ambiguous_matches() {
+        use super::{LyricsResponse, select_candidate};
+        use crate::lyric_cache::Lookup;
+        let lookup = Lookup {
+            key: "test",
+            track: "Song",
+            artist: "Artist",
+            album: "Album",
+            duration_ms: 100_000,
+        };
+        let candidate = |title: &str, artist: &str, duration: f64, text: &str| LyricsResponse {
+            track_name: Some(title.into()),
+            artist_name: Some(artist.into()),
+            album_name: Some("Album".into()),
+            duration: Some(duration),
+            synced_lyrics: Some(text.into()),
+            instrumental: false,
+        };
+        for bad in [
+            candidate("Song Live", "Artist", 100.0, "[00:00]live"),
+            candidate("Song", "Cover Artist", 100.0, "[00:00]cover"),
+            candidate("Song", "Artist", 120.0, "[00:00]other"),
+        ] {
+            assert!(select_candidate(vec![bad], &lookup).is_none());
+        }
+        assert!(
+            select_candidate(
+                vec![
+                    candidate("Song", "Artist", 100.0, "[00:00]one"),
+                    candidate("Song", "Artist", 100.0, "[00:00]two")
+                ],
+                &lookup
+            )
+            .is_none()
+        );
+        let chosen = select_candidate(
+            vec![
+                candidate("song", "ARTIST", 101.0, "[00:00]far"),
+                candidate("Song", "Artist", 100.1, "[00:00]near"),
+            ],
+            &lookup,
+        )
+        .unwrap();
+        assert_eq!(chosen.synced_lyrics.unwrap(), "[00:00]near");
+    }
 
     #[test]
     fn parses_integer_fractional_seconds_without_float_rounding() {

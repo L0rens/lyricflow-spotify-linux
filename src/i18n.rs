@@ -414,6 +414,13 @@ pub fn tr(language: &str, key: &str) -> &'static str {
 
 fn additional(language: &str, key: &str) -> Option<&'static str> {
     Some(match (language, key) {
+        ("ru", "demo") => "ДЕМО",
+        ("ru", "demo_controls") => " Пробел / ← → / R / Q / Esc",
+        ("ru", "demo_updates_offline") => "Проверка обновлений отключена в демо.",
+        (_, "demo") => "DEMO",
+        (_, "demo_controls") => " Space / ← → / R / Q / Esc",
+        (_, "demo_updates_offline") => "Update checks are disabled in demo.",
+
         ("ru", "animation") => "Анимация",
         ("ru", "animation_fps") => "Частота анимации",
         ("ru", "karaoke_fill") => "Заполнение строки",

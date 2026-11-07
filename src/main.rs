@@ -1,7 +1,10 @@
 mod cli;
 mod clock;
+mod demo;
+mod doctor;
 mod i18n;
 mod karaoke;
+mod lyric_cache;
 mod lyrics;
 mod services;
 mod spotify;
@@ -472,6 +475,7 @@ fn edit_setting(app: &mut App, direction: i64) {
 }
 
 struct App {
+    demo_mode: bool,
     playback: Option<Playback>,
     clock: PlaybackClock,
     message: String,
@@ -488,7 +492,12 @@ struct App {
 impl App {
     fn new() -> Self {
         let (settings, warning) = load_settings();
+        Self::with_settings(settings, warning)
+    }
+
+    fn with_settings(settings: Settings, warning: Option<String>) -> Self {
         Self {
+            demo_mode: false,
             playback: None,
             clock: PlaybackClock::new(),
             message: i18n::tr(&settings.language, "connecting").to_owned(),
@@ -814,7 +823,9 @@ fn draw(frame: &mut Frame, app: &App) {
 
     draw_lyrics(frame, app, sections[2], muted);
 
-    let status = if app.connected {
+    let status = if app.demo_mode {
+        t("demo")
+    } else if app.connected {
         t("connected")
     } else {
         t("disconnected")
@@ -830,7 +841,9 @@ fn draw(frame: &mut Frame, app: &App) {
                 }),
             ),
             Span::styled(
-                if compact {
+                if app.demo_mode {
+                    t("demo_controls")
+                } else if compact {
                     t("footer_compact")
                 } else {
                     t("footer_help")
@@ -846,10 +859,37 @@ fn draw(frame: &mut Frame, app: &App) {
     }
 }
 
-async fn run(terminal: &mut DefaultTerminal, settings_only: bool) -> Result<()> {
+enum UiMode {
+    Playback,
+    Settings,
+    Demo(Option<PathBuf>),
+}
+
+async fn run(terminal: &mut DefaultTerminal, mode: UiMode) -> Result<()> {
+    let settings_only = matches!(mode, UiMode::Settings);
+    let mut demo = match mode {
+        UiMode::Demo(file) => Some(demo::Demo::load(file.as_deref(), Instant::now())?),
+        _ => None,
+    };
+    let demo_mode = demo.is_some();
     let mut playback_worker = PlaybackWorker::new();
     let mut lyrics_loader = LyricsLoader::default();
-    let mut app = App::new();
+    let mut app = if demo_mode {
+        App::with_settings(Settings::default(), None)
+    } else {
+        App::new()
+    };
+    if let Some(demo) = &demo {
+        app.demo_mode = true;
+        app.connected = true;
+        app.playback = Some(demo.playback(Instant::now()));
+        app.track_key = app
+            .playback
+            .as_ref()
+            .and_then(|state| state.item.as_ref())
+            .map(|track| track.key());
+        app.lyrics = Some(demo.lyrics.clone());
+    }
     app.menu_open = settings_only;
     if settings_only {
         let controls = i18n::tr(&app.settings.language, "settings_controls");
@@ -866,11 +906,28 @@ async fn run(terminal: &mut DefaultTerminal, settings_only: bool) -> Result<()> 
     }
     let mut last_poll = Instant::now() - Duration::from_secs(31);
     let mut update_task: Option<tokio::task::JoinHandle<updates::UpdateResult>> = None;
-    if app.settings.check_updates && !settings_only {
+    if app.settings.check_updates && !settings_only && !demo_mode {
         update_task = Some(tokio::spawn(updates::check()));
     }
 
     loop {
+        if let Some(demo) = &demo {
+            let now = Instant::now();
+            let position = demo.position(now);
+            let playing = demo.is_playing(now);
+            app.clock.sync(
+                app.track_key.as_deref(),
+                playing,
+                position,
+                demo.duration_ms,
+                now,
+                now,
+            );
+            if let Some(state) = app.playback.as_mut() {
+                state.is_playing = playing;
+                state.progress_ms = Some(position);
+            }
+        }
         if update_task.as_ref().is_some_and(|task| task.is_finished())
             && let Some(task) = update_task.take()
         {
@@ -880,6 +937,7 @@ async fn run(terminal: &mut DefaultTerminal, settings_only: bool) -> Result<()> 
                 .message(&app.settings.language);
         }
         if !settings_only
+            && !demo_mode
             && last_poll.elapsed() >= Duration::from_secs(app.settings.refresh_seconds.clamp(1, 30))
             && playback_worker.request()
         {
@@ -952,7 +1010,9 @@ async fn run(terminal: &mut DefaultTerminal, settings_only: bool) -> Result<()> 
                 match key.code {
                     KeyCode::Esc => {
                         app.menu_open = false;
-                        save_settings(&app.settings)?;
+                        if !demo_mode {
+                            save_settings(&app.settings)?;
+                        }
                         if settings_only {
                             break;
                         }
@@ -968,12 +1028,20 @@ async fn run(terminal: &mut DefaultTerminal, settings_only: bool) -> Result<()> 
                     KeyCode::Right | KeyCode::Char('l') => edit_setting(&mut app, 1),
                     KeyCode::Enter => match app.menu_selection {
                         0..=11 => edit_setting(&mut app, 1),
+                        12 if demo_mode => {
+                            app.update_message =
+                                i18n::tr(&app.settings.language, "demo_updates_offline").to_owned();
+                        }
                         12 => {
                             app.update_message =
                                 i18n::tr(&app.settings.language, "checking_updates").to_owned();
                             update_task = Some(tokio::spawn(updates::check()));
                         }
-                        13 => save_settings(&app.settings)?,
+                        13 => {
+                            if !demo_mode {
+                                save_settings(&app.settings)?;
+                            }
+                        }
                         14 => {
                             app.settings = Settings::default();
                             app.update_message =
@@ -981,7 +1049,9 @@ async fn run(terminal: &mut DefaultTerminal, settings_only: bool) -> Result<()> 
                         }
                         15 => {
                             app.menu_open = false;
-                            save_settings(&app.settings)?;
+                            if !demo_mode {
+                                save_settings(&app.settings)?;
+                            }
                             if settings_only {
                                 break;
                             }
@@ -994,7 +1064,26 @@ async fn run(terminal: &mut DefaultTerminal, settings_only: bool) -> Result<()> 
                 match key.code {
                     KeyCode::Char('q') => break,
                     KeyCode::Esc => app.menu_open = true,
+                    KeyCode::Char(' ') => {
+                        if let Some(demo) = demo.as_mut() {
+                            demo.toggle_pause(Instant::now());
+                        }
+                    }
+                    KeyCode::Left => {
+                        if let Some(demo) = demo.as_mut() {
+                            demo.seek(Instant::now(), -5_000);
+                        }
+                    }
+                    KeyCode::Right => {
+                        if let Some(demo) = demo.as_mut() {
+                            demo.seek(Instant::now(), 5_000);
+                        }
+                    }
                     KeyCode::Char('r') => {
+                        if let Some(demo) = demo.as_mut() {
+                            demo.restart(Instant::now());
+                            continue;
+                        }
                         playback_worker.retry();
                         last_poll = Instant::now() - Duration::from_secs(31);
                         if app.lyrics.is_none()
@@ -1017,9 +1106,9 @@ async fn run(terminal: &mut DefaultTerminal, settings_only: bool) -> Result<()> 
     Ok(())
 }
 
-async fn start(settings_only: bool) -> Result<()> {
+async fn start(mode: UiMode) -> Result<()> {
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, settings_only).await;
+    let result = run(&mut terminal, mode).await;
     ratatui::restore();
     result
 }
@@ -1070,8 +1159,14 @@ async fn status() -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     match cli::parse(std::env::args().skip(1))? {
-        cli::Command::Run => start(false).await?,
-        cli::Command::Settings => start(true).await?,
+        cli::Command::Run => start(UiMode::Playback).await?,
+        cli::Command::Settings => start(UiMode::Settings).await?,
+        cli::Command::Demo { file } => start(UiMode::Demo(file)).await?,
+        cli::Command::Doctor { offline } => {
+            let report = doctor::run(offline).await;
+            print!("{}", report.render());
+            anyhow::ensure!(report.healthy(), "Required checks need attention");
+        }
         cli::Command::Login => spotify::login().await?,
         cli::Command::Logout => {
             println!(

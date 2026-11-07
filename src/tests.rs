@@ -34,6 +34,7 @@ fn app_at(position_ms: u64, lyrics: Vec<LyricLine>) -> App {
         ..Settings::default()
     };
     let mut app = App {
+        demo_mode: false,
         playback: None,
         clock: PlaybackClock::new(),
         message: String::new(),

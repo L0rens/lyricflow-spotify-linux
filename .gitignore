@@ -10,3 +10,5 @@ settings.json
 /pause-fix-backup-*/
 /cli-fix-backup-*/
 *.bak.*
+
+/dist/

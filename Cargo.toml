@@ -1,6 +1,6 @@
 [package]
 name = "lyricflow"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Terminal karaoke for Spotify on Linux with synchronized lyrics"
 license = "MIT"
@@ -25,3 +25,6 @@ semver = "1"
 
 [dev-dependencies]
 http = "1"
+
+[profile.release]
+strip = true
